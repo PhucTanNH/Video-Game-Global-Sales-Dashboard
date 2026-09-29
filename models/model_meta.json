@@ -1,0 +1,60 @@
+{
+  "model": "5. XGBoost (tuned)",
+  "task": "regression",
+  "target": "Global_Sales",
+  "features_cat": [
+    "Genre",
+    "Platform",
+    "Publisher_Tier",
+    "Platform_Manufacturer",
+    "Platform_Lifecycle_Stage",
+    "ConsoleGen"
+  ],
+  "features_num": [
+    "Year",
+    "Is_Sequel",
+    "Is_Multiplatform",
+    "Num_Platforms",
+    "Prev_Franchise_MaxSales",
+    "Prev_Franchise_TitleCount",
+    "Pub_Prev3Y_AvgSales",
+    "Pub_Prev3Y_Count",
+    "Genre_Prev3Y_AvgSales",
+    "Genre_Prev3Y_Count",
+    "Platform_Prev3Y_AvgSales",
+    "Platform_Prev3Y_Count",
+    "Years_Since_Platform_Launch",
+    "Genre_vs_Market_Avg",
+    "Publisher_MarketShare_Prev3Y",
+    "Genre_Trend_Momentum",
+    "PubGenre_Specialization",
+    "GenrePlatform_Fit",
+    "SameGenre_Releases_PrevYear"
+  ],
+  "metrics_test": {
+    "RMSE": 1.0149,
+    "MAE": 0.3847,
+    "R2": 0.3303
+  },
+  "train_years": [
+    1980,
+    2012
+  ],
+  "test_years": [
+    2013,
+    2020
+  ],
+  "cv_strategy": "TimeSeriesSplit(5)",
+  "top_features": [
+    "Prev_Franchise_MaxSales",
+    "Prev_Franchise_TitleCount",
+    "Pub_Prev3Y_AvgSales",
+    "Platform_Prev3Y_AvgSales",
+    "Years_Since_Platform_Launch",
+    "Platform_Manufacturer",
+    "Num_Platforms",
+    "SameGenre_Releases_PrevYear",
+    "Genre",
+    "Is_Sequel"
+  ]
+}

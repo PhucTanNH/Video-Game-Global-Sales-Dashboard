@@ -1,0 +1,13 @@
+﻿Genre,mean,count
+Shooter,0.933,172
+Sports,0.536,208
+Misc,0.535,140
+Platform,0.364,71
+Role-Playing,0.348,282
+Action,0.344,709
+Simulation,0.323,54
+Fighting,0.289,78
+Puzzle,0.27,17
+Racing,0.246,82
+Strategy,0.153,54
+Adventure,0.073,223

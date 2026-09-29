@@ -1,0 +1,10 @@
+﻿mo_hinh,RMSE,MAE,R2
+Linear (baseline noi bo),2.0374,0.4792,-1.6985
+Median (baseline co so),1.2804,0.4574,-0.0657
+1. Linear (baseline noi bo),2.0374,0.4792,-1.6985
+2. Ridge,2.0376,0.4726,-1.6991
+3. kNN,1.0737,0.4254,0.2506
+4. Random Forest,0.9831,0.418,0.3717
+5. XGBoost,1.0252,0.3917,0.3167
+6. LightGBM,0.9465,0.36,0.4176
+** 5. XGBoost (tuned) (tot nhat) **,1.0149,0.3847,0.3303

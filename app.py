@@ -113,8 +113,8 @@ with tab2:
         'R²': [-1.70, -0.07, 0.25, 0.37, 0.32, 0.42, 0.33],
     })
     st.dataframe(results.style.format({'RMSE (M)':'{:.3f}','MAE (M)':'{:.3f}','R²':'{:.2f}'})
-                .highlight_min(subset=['RMSE (M)', 'MAE (M)'],color='#e6f4f1')
-                .highlight_max(subset=['R²'],color='#e6f4f1'))
+                .highlight_min(subset=['RMSE (M)', 'MAE (M)'],color='#e8f1fb')
+                .highlight_max(subset=['R²'],color='#e8f1fb'))
 
     col1, col2 = st.columns(2)
     with col1:

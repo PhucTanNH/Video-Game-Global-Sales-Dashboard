@@ -12,8 +12,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings; warnings.filterwarnings('ignore')
 
+APP_VERSION = "1.1.0"
+LEGACY_VERSION = "1.0.0"
+
 # ---------- Page configuration ----------
-st.set_page_config(page_title="Video Game Sales Dashboard", layout="wide", page_icon="🎮")
+st.set_page_config(page_title=f"Video Game Sales Dashboard v{APP_VERSION}", layout="wide", page_icon="🎮")
 
 # ---------- Load data & model (cached for performance) ----------
 @st.cache_data
@@ -58,12 +61,20 @@ st.sidebar.markdown(f"**Games shown:** {len(df_filtered):,} / {len(df):,}")
 
 # ---------- Title ----------
 st.title("Video Game Global Sales Prediction Dashboard")
+st.info(f"Current version: v{APP_VERSION} | Previous version: v{LEGACY_VERSION} (legacy)")
 metrics = model_meta['metrics_test']
 st.markdown(
     f"*ADY201m project — Model: {model_meta['model']} | Target: {model_meta['target']} (raw sales, millions) "
     f"| Inputs: {len(CAT) + len(NUM)} ({len(CAT)} categorical, {len(NUM)} numeric) "
     f"| Test RMSE={metrics['RMSE']:.3f}M, MAE={metrics['MAE']:.3f}M, R²={metrics['R2']:.2f}*"
 )
+with st.expander(f"What's new in v{APP_VERSION}"):
+    st.markdown(
+        "- Prediction features and metrics are read from the deployed model metadata.\n"
+        "- Historical feature lookups use only information available before the selected release year.\n"
+        "- Prediction uncertainty is labeled as an approximate range, not a calibrated 95% interval.\n"
+        "- The feature details table now renders mixed numeric and categorical values reliably."
+    )
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 RQ1: Factors", "🤖 RQ2: Model Comparison", "🎯 RQ3: Console Generations", "🔮 Sales Prediction"])
 

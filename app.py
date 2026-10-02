@@ -2,6 +2,7 @@
 # DASHBOARD STREAMLIT - Video Game Global Sales Prediction
 # Run: streamlit run app.py
 # ============================================================
+import json
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,19 +24,21 @@ def load_data():
 def load_model():
     return joblib.load('models/best_model.joblib')
 
+@st.cache_data
+def load_model_meta():
+    with open('models/model_meta.json', encoding='utf-8') as f:
+        return json.load(f)
+
 df = load_data()
 model = load_model()
+model_meta = load_model_meta()
 
-# Features used to train the model (order must be preserved)
-CAT = ['Genre','Platform','Publisher_Tier','Platform_Manufacturer','Platform_Lifecycle_Stage','ConsoleGen']
-NUM = ['Year','Is_Sequel','Is_Multiplatform','Num_Platforms','Prev_Franchise_MaxSales','Prev_Franchise_TitleCount',
-       'Pub_Prev3Y_AvgSales','Pub_Prev3Y_Count','Genre_Prev3Y_AvgSales','Genre_Prev3Y_Count',
-       'Platform_Prev3Y_AvgSales','Platform_Prev3Y_Count','Years_Since_Platform_Launch','Genre_vs_Market_Avg',
-       'Publisher_MarketShare_Prev3Y','Genre_Trend_Momentum','PubGenre_Specialization','GenrePlatform_Fit',
-       'SameGenre_Releases_PrevYear']
+# Keep inference feature order tied to the deployed model metadata.
+CAT = model_meta['features_cat']
+NUM = model_meta['features_num']
 
 # Training ranges used to flag out-of-range inputs
-TRAIN = df[df['Year']<=2012]
+TRAIN = df[df['Year']<=model_meta['train_years'][1]]
 train_ranges = {c: (TRAIN[c].min(), TRAIN[c].max()) for c in NUM if c in TRAIN.columns}
 
 # ---------- Sidebar: Filters ----------
@@ -55,7 +58,12 @@ st.sidebar.markdown(f"**Games shown:** {len(df_filtered):,} / {len(df):,}")
 
 # ---------- Title ----------
 st.title("Video Game Global Sales Prediction Dashboard")
-st.markdown("*ADY201m project — Leakage-free prediction with 63 engineered features | Model: tuned XGBoost (RMSE=1.01M, R²=0.33) | Best test result: LightGBM RMSE=0.947M, R²=0.42*")
+metrics = model_meta['metrics_test']
+st.markdown(
+    f"*ADY201m project — Model: {model_meta['model']} | Target: {model_meta['target']} (raw sales, millions) "
+    f"| Inputs: {len(CAT) + len(NUM)} ({len(CAT)} categorical, {len(NUM)} numeric) "
+    f"| Test RMSE={metrics['RMSE']:.3f}M, MAE={metrics['MAE']:.3f}M, R²={metrics['R2']:.2f}*"
+)
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 RQ1: Factors", "🤖 RQ2: Model Comparison", "🎯 RQ3: Console Generations", "🔮 Sales Prediction"])
 
@@ -113,8 +121,8 @@ with tab2:
         'R²': [-1.70, -0.07, 0.25, 0.37, 0.32, 0.42, 0.33],
     })
     st.dataframe(results.style.format({'RMSE (M)':'{:.3f}','MAE (M)':'{:.3f}','R²':'{:.2f}'})
-                .highlight_min(subset=['RMSE (M)', 'MAE (M)'],color='#E2EFDA')
-                .highlight_max(subset=['R²'],color='#E2EFDA'))
+                 .highlight_min(subset=['RMSE (M)','MAE (M)'], color='#c6f6d5')
+                 .highlight_max(subset=['R²'], color='#c6f6d5'), use_container_width=True)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -194,11 +202,20 @@ with tab4:
         """Look up rolling features for a group over the previous three years."""
         sub = df[(df[group_col]==val) & (df['Year']<year) & (df['Year']>=year-3)]
         if len(sub)==0:
-            sub = df[df[group_col]==val]  # Fallback: all available history
+            sub = df[(df[group_col]==val) & (df['Year']<year)]
+        historical_sales = df.loc[df['Year']<year, 'Global_Sales']
         return {
-            f'{col_prefix}_Prev3Y_AvgSales': sub['Global_Sales'].mean() if len(sub)>0 else df['Global_Sales'].mean(),
+            f'{col_prefix}_Prev3Y_AvgSales': sub['Global_Sales'].mean() if len(sub)>0 else historical_sales.mean(),
             f'{col_prefix}_Prev3Y_Count': len(sub),
         }
+
+    def historical_feature_value(feature, group_mask, year):
+        history = df.loc[group_mask & (df['Year']<year), ['Year', feature]]
+        if len(history)>0:
+            latest_year = history['Year'].max()
+            return history.loc[history['Year']==latest_year, feature].median()
+        baseline = df.loc[df['Year']<year, feature].dropna()
+        return baseline.median() if len(baseline)>0 else 0.0
 
     pub_feat  = lookup('Publisher', publisher, year, 'Pub')
     gen_feat  = lookup('Genre', genre, year, 'Genre')
@@ -224,6 +241,20 @@ with tab4:
     market_avg = df[(df['Year']<year)&(df['Year']>=year-3)]['Global_Sales'].mean()
     market_total = df[(df['Year']<year)&(df['Year']>=year-3)]['Global_Sales'].sum()
 
+    genre_trend = historical_feature_value('Genre_Trend_Momentum', df['Genre']==genre, year)
+    publisher_genre_fit = historical_feature_value(
+        'PubGenre_Specialization', (df['Publisher']==publisher) & (df['Genre']==genre), year
+    )
+    genre_platform_fit = historical_feature_value(
+        'GenrePlatform_Fit', (df['Genre']==genre) & (df['Platform']==platform), year
+    )
+    target_previous_year = year-1
+    if df['Year'].min() <= target_previous_year <= df['Year'].max():
+        same_genre_releases = int(((df['Genre']==genre) & (df['Year']==target_previous_year)).sum())
+    else:
+        recent_releases = df[(df['Genre']==genre) & (df['Year']<year)].groupby('Year').size().tail(3)
+        same_genre_releases = recent_releases.mean() if len(recent_releases)>0 else 0
+
     input_data = pd.DataFrame([{
         'Year': year, 'Genre': genre, 'Platform': platform,
         'Publisher_Tier': pub_tier, 'Platform_Manufacturer': manuf,
@@ -240,10 +271,10 @@ with tab4:
         'Years_Since_Platform_Launch': years_since if years_since>=0 else 0,
         'Genre_vs_Market_Avg': gen_feat['Genre_Prev3Y_AvgSales']/(market_avg+1e-6),
         'Publisher_MarketShare_Prev3Y': pub_feat['Pub_Prev3Y_AvgSales']*pub_feat['Pub_Prev3Y_Count']/(market_total+1e-6),
-        'Genre_Trend_Momentum': 1.0,  # Assume neutral momentum
-        'PubGenre_Specialization': 1.0,
-        'GenrePlatform_Fit': 1.0,
-        'SameGenre_Releases_PrevYear': gen_feat['Genre_Prev3Y_Count']/3,
+        'Genre_Trend_Momentum': genre_trend,
+        'PubGenre_Specialization': publisher_genre_fit,
+        'GenrePlatform_Fit': genre_platform_fit,
+        'SameGenre_Releases_PrevYear': same_genre_releases,
     }])
 
     # --- Warn about inputs outside the training range ---
@@ -261,15 +292,16 @@ with tab4:
     if st.button("🚀 Predict Sales", type="primary"):
         pred = model.predict(input_data[CAT+NUM])[0]
         pred = max(0.01, pred)  # Prevent negative predictions
-        mae_test = 0.385  # Tuned XGBoost test-set MAE
+        mae_test = metrics['MAE']
         lo_ci = max(0.01, pred - 1.96*mae_test)
         hi_ci = pred + 1.96*mae_test
         st.balloons()
         st.subheader("Prediction Results")
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Predicted sales", f"{pred:.2f} million units")
-        col_b.metric("95% confidence interval", f"{lo_ci:.2f} – {hi_ci:.2f} M")
+        col_b.metric("Approximate prediction range", f"{lo_ci:.2f} – {hi_ci:.2f} M")
         col_c.metric("Expected error (MAE)", f"±{mae_test:.2f} M")
+        st.caption("Approximate range based on test MAE; it is not a calibrated 95% confidence interval.")
 
         # Classification
         if pred >= 5: level = "💎 Blockbuster (≥5M)"
@@ -279,7 +311,7 @@ with tab4:
         st.info(f"**Classification:** {level}")
 
         with st.expander("View features used for this prediction"):
-            st.dataframe(input_data.T, use_container_width=True)
+            st.dataframe(input_data.T.astype(str), use_container_width=True)
 
 # ---------- Footer ----------
 st.markdown("---")

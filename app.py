@@ -165,6 +165,11 @@ with tab2:
     st.dataframe(results.style.format({'RMSE (M)':'{:.3f}','MAE (M)':'{:.3f}','R²':'{:.2f}'})
                  .highlight_min(subset=['RMSE (M)','MAE (M)'], color='#c6f6d5')
                  .highlight_max(subset=['R²'], color='#c6f6d5'), use_container_width=True)
+    linear_result = results.loc[results['Model']=='Linear Regression'].iloc[0]
+    st.caption(
+        f"The linear baseline's negative R² ({linear_result['R²']:.2f}) means it performs worse than "
+        "predicting the test-set mean; R² is not an accuracy percentage."
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -283,8 +288,13 @@ with tab4:
     pub_tier = pub_tier.iloc[0] if len(pub_tier)>0 else 'Small'
 
     # Market values and ratios
-    market_avg = df[(df['Year']<year)&(df['Year']>=year-3)]['Global_Sales'].mean()
-    market_total = df[(df['Year']<year)&(df['Year']>=year-3)]['Global_Sales'].sum()
+    market_history = df[(df['Year']<year)&(df['Year']>=year-3)]
+    if market_history.empty:
+        market_history = df[df['Year']<year]
+    market_avg = market_history['Global_Sales'].mean()
+    market_total = market_history['Global_Sales'].sum()
+    market_avg = market_avg if pd.notna(market_avg) and market_avg > 0 else 0.0
+    market_total = market_total if pd.notna(market_total) and market_total > 0 else 0.0
     platform_history = df[(df['Platform']==platform) & (df['Year']<year)]
     platform_cumulative_titles = len(platform_history)
     platform_cumulative_sales = platform_history['Global_Sales'].sum()
@@ -298,7 +308,7 @@ with tab4:
     )
     target_previous_year = year-1
     if df['Year'].min() <= target_previous_year <= df['Year'].max():
-        same_genre_releases = int(((df['Genre']==genre) & (df['Year']==target_previous_year)).sum())
+        same_genre_releases = ((df['Genre']==genre) & (df['Year']==target_previous_year)).sum()
     else:
         recent_releases = df[(df['Genre']==genre) & (df['Year']<year)].groupby('Year').size().tail(3)
         same_genre_releases = recent_releases.mean() if len(recent_releases)>0 else 0
@@ -317,8 +327,11 @@ with tab4:
         'Platform_Prev3Y_AvgSales': plat_feat['Platform_Prev3Y_AvgSales'],
         'Platform_Prev3Y_Count': plat_feat['Platform_Prev3Y_Count'],
         'Years_Since_Platform_Launch': years_since if years_since>=0 else 0,
-        'Genre_vs_Market_Avg': gen_feat['Genre_Prev3Y_AvgSales']/(market_avg+1e-6),
-        'Publisher_MarketShare_Prev3Y': pub_feat['Pub_Prev3Y_AvgSales']*pub_feat['Pub_Prev3Y_Count']/(market_total+1e-6),
+        'Genre_vs_Market_Avg': gen_feat['Genre_Prev3Y_AvgSales']/market_avg if market_avg > 0 else 0.0,
+        'Publisher_MarketShare_Prev3Y': (
+            pub_feat['Pub_Prev3Y_AvgSales']*pub_feat['Pub_Prev3Y_Count']/market_total
+            if market_total > 0 else 0.0
+        ),
         'Genre_Trend_Momentum': genre_trend,
         'PubGenre_Specialization': publisher_genre_fit,
         'GenrePlatform_Fit': genre_platform_fit,
@@ -329,8 +342,10 @@ with tab4:
 
     # --- Warn about inputs outside the training range ---
     warnings_list = []
-    for c in ['Year','Num_Platforms','Prev_Franchise_MaxSales']:
+    for c in NUM:
         lo, hi = train_ranges.get(c, (None, None))
+        if c not in input_data.columns:
+            continue
         val = input_data[c].iloc[0]
         if lo is not None and (val < lo or val > hi):
             warnings_list.append(f"⚠️ **{c}** = {val} is outside the training range ({lo:.0f}–{hi:.0f}) → prediction may be less reliable")
@@ -340,18 +355,20 @@ with tab4:
         for w in warnings_list: st.warning(w)
 
     if st.button("🚀 Predict Sales", type="primary"):
+        missing = [feature for feature in CAT + NUM if feature not in input_data.columns]
+        if missing:
+            st.error(f"Missing features required by the model: {missing}")
+            st.stop()
         pred = model.predict(input_data[CAT+NUM])[0]
         pred = max(0.01, pred)  # Prevent negative predictions
         mae_test = metrics['MAE']
-        lo_ci = max(0.01, pred - 1.96*mae_test)
-        hi_ci = pred + 1.96*mae_test
         st.balloons()
         st.subheader("Prediction Results")
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Predicted sales", f"{pred:.2f} million units")
-        col_b.metric("Approximate prediction range", f"{lo_ci:.2f} – {hi_ci:.2f} M")
-        col_c.metric("Expected error (MAE)", f"±{mae_test:.2f} M")
-        st.caption("Approximate range based on test MAE; it is not a calibrated 95% confidence interval.")
+        col_b.metric("Test MAE", f"{mae_test:.2f} M")
+        col_c.metric("Test RMSE", f"{metrics['RMSE']:.2f} M")
+        st.caption("MAE and RMSE are aggregate metrics on the held-out test set, not a per-game confidence or prediction interval.")
 
         # Classification
         if pred >= 5: level = "💎 Blockbuster (≥5M)"

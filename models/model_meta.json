@@ -1,7 +1,9 @@
 {
-  "model": "5. XGBoost (tuned)",
+  "model": "XGBoost (tuned)",
+  "model_version": "2.0.0",
   "task": "regression",
   "target": "Global_Sales",
+  "target_transform": "log1p; predictions inverse-transformed with expm1",
   "features_cat": [
     "Genre",
     "Platform",
@@ -29,12 +31,14 @@
     "Genre_Trend_Momentum",
     "PubGenre_Specialization",
     "GenrePlatform_Fit",
-    "SameGenre_Releases_PrevYear"
+    "SameGenre_Releases_PrevYear",
+    "Platform_Cumulative_Titles",
+    "Platform_Cumulative_Sales"
   ],
   "metrics_test": {
-    "RMSE": 1.0149,
-    "MAE": 0.3847,
-    "R2": 0.3303
+    "RMSE": 0.9698245904667538,
+    "MAE": 0.37169036493897906,
+    "R2": 0.3885533599626184
   },
   "train_years": [
     1980,
@@ -44,17 +48,21 @@
     2013,
     2020
   ],
-  "cv_strategy": "TimeSeriesSplit(5)",
+  "train_rows": 14237,
+  "test_rows": 2090,
+  "cv_strategy": "TimeSeriesSplit(5) for model selection; TimeSeriesSplit(3) for chronological stacking OOF",
+  "evaluation_note": "Retrospective rerun on the report's reused holdout; not an independent test set. Publisher_Tier and Num_Platforms retain the limitations discussed in the report.",
+  "tuning_note": "Uses tuned configurations stated in the report. RandomizedSearchCV search distributions were not included, so the search itself was not repeated.",
   "top_features": [
     "Prev_Franchise_MaxSales",
     "Prev_Franchise_TitleCount",
-    "Pub_Prev3Y_AvgSales",
     "Platform_Prev3Y_AvgSales",
-    "Years_Since_Platform_Launch",
+    "Pub_Prev3Y_AvgSales",
     "Platform_Manufacturer",
+    "PubGenre_Specialization",
     "Num_Platforms",
-    "SameGenre_Releases_PrevYear",
-    "Genre",
-    "Is_Sequel"
+    "Platform",
+    "Is_Sequel",
+    "Genre"
   ]
 }

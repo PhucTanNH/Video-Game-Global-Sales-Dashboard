@@ -12,8 +12,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings; warnings.filterwarnings('ignore')
 
-APP_VERSION = "1.1.0"
-LEGACY_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
+LEGACY_VERSION = "1.1.0"
 
 # ---------- Page configuration ----------
 st.set_page_config(page_title=f"Video Game Sales Dashboard v{APP_VERSION}", layout="wide", page_icon="🎮")
@@ -21,7 +21,32 @@ st.set_page_config(page_title=f"Video Game Sales Dashboard v{APP_VERSION}", layo
 # ---------- Load data & model (cached for performance) ----------
 @st.cache_data
 def load_data():
-    return pd.read_excel('ADY201m_enhanced_v2.xlsx')
+    data = pd.read_excel('ADY201m_enhanced_v2.xlsx')
+    platform_year = (
+        data.groupby(['Platform', 'Year'], as_index=False, sort=False)
+        .agg(
+            current_year_titles=('Platform', 'size'),
+            current_year_sales=('Global_Sales', 'sum'),
+        )
+        .sort_values(['Platform', 'Year'], kind='mergesort')
+    )
+    platform_year['Platform_Cumulative_Titles'] = (
+        platform_year.groupby('Platform', sort=False)['current_year_titles'].cumsum()
+        - platform_year['current_year_titles']
+    )
+    platform_year['Platform_Cumulative_Sales'] = (
+        platform_year.groupby('Platform', sort=False)['current_year_sales'].cumsum()
+        - platform_year['current_year_sales']
+    )
+    return data.merge(
+        platform_year[
+            ['Platform', 'Year', 'Platform_Cumulative_Titles', 'Platform_Cumulative_Sales']
+        ],
+        on=['Platform', 'Year'],
+        how='left',
+        validate='many_to_one',
+        sort=False,
+    )
 
 @st.cache_resource
 def load_model():
@@ -68,13 +93,16 @@ st.markdown(
     f"| Inputs: {len(CAT) + len(NUM)} ({len(CAT)} categorical, {len(NUM)} numeric) "
     f"| Test RMSE={metrics['RMSE']:.3f}M, MAE={metrics['MAE']:.3f}M, R²={metrics['R2']:.2f}*"
 )
+st.caption(f"Training target transform: {model_meta.get('target_transform', 'none')}")
 with st.expander(f"What's new in v{APP_VERSION}"):
     st.markdown(
-        "- Prediction features and metrics are read from the deployed model metadata.\n"
-        "- Historical feature lookups use only information available before the selected release year.\n"
-        "- Prediction uncertainty is labeled as an approximate range, not a calibrated 95% interval.\n"
-        "- The feature details table now renders mixed numeric and categorical values reliably."
+        "- Expanded the model comparison to eight regressors and 27 pre-release features.\n"
+        "- Added CatBoost, chronological out-of-fold stacking, and platform cumulative history.\n"
+        "- The deployed estimator is selected using training-only temporal cross-validation.\n"
+        "- Re-ran model comparison and TimeSeriesSplit using a log-transformed target.\n"
+        "- Test metrics are a retrospective rerun on the report's previously used holdout, not a new independent test."
     )
+st.caption(model_meta.get('evaluation_note', ''))
 
 tab1, tab2, tab3, tab4 = st.tabs(["📊 RQ1: Factors", "🤖 RQ2: Model Comparison", "🎯 RQ3: Console Generations", "🔮 Sales Prediction"])
 
@@ -83,7 +111,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 RQ1: Factors", "🤖 RQ2: Model Comparis
 # ============================================================
 with tab1:
     st.header("RQ1: Which genres, platforms, and regions have the greatest impact on sales?")
-    st.success("Conclusion: Franchise history and publisher reputation have the strongest effects; platform has a moderate effect; genre has a weaker direct effect than expected after controlling for publisher and franchise.")
+    st.success(f"Feature importance is calculated for the deployed {model_meta['model']} model; correlated features can share importance.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -115,7 +143,7 @@ with tab1:
     imp = pd.read_csv('models/permutation_importance.csv', index_col=0).iloc[:,0].sort_values(ascending=True).tail(10)
     fig = px.bar(x=imp.values, y=imp.index, orientation='h',
                  labels={'x':'Increase in RMSE after feature permutation','y':'Feature'},
-                 title="Feature Importance (tuned XGBoost)")
+                 title=f"Feature Importance ({model_meta['model']})")
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
@@ -123,14 +151,17 @@ with tab1:
 # ============================================================
 with tab2:
     st.header("RQ2: Which model predicts sales most accurately?")
-    st.success("Conclusion: Gradient-boosted trees (LightGBM/XGBoost/Random Forest) substantially outperform the linear model. LightGBM achieves the best test result: RMSE=0.947M, R²=0.42, exceeding the Zhan 2026 paper's baseline (R²≈0.384).")
-
-    results = pd.DataFrame({
-        'Model': ['Linear (baseline)','Median (baseline)','kNN','Random Forest','XGBoost','LightGBM','XGBoost (tuned)'],
-        'RMSE (M)': [2.037, 1.280, 1.074, 0.983, 1.025, 0.947, 1.015],
-        'MAE (M)': [0.479, 0.457, 0.425, 0.418, 0.392, 0.360, 0.385],
-        'R²': [-1.70, -0.07, 0.25, 0.37, 0.32, 0.42, 0.33],
-    })
+    results = pd.read_csv('models/test_results.csv').rename(columns={'R2': 'R²'})
+    best_test = results.loc[results['RMSE (M)'].idxmin()]
+    deployed_result = results.loc[results['Model']==model_meta['model']].iloc[0]
+    st.success(
+        f"Deployed model selected by training-only CV: {model_meta['model']} "
+        f"(holdout RMSE={deployed_result['RMSE (M)']:.3f}M, MAE={deployed_result['MAE (M)']:.3f}M, R²={deployed_result['R²']:.3f})."
+    )
+    st.caption(
+        f"Lowest retrospective holdout RMSE in this rerun: {best_test['Model']} "
+        f"({best_test['RMSE (M)']:.3f}M). The holdout was not used for this rerun's model selection."
+    )
     st.dataframe(results.style.format({'RMSE (M)':'{:.3f}','MAE (M)':'{:.3f}','R²':'{:.2f}'})
                  .highlight_min(subset=['RMSE (M)','MAE (M)'], color='#c6f6d5')
                  .highlight_max(subset=['R²'], color='#c6f6d5'), use_container_width=True)
@@ -139,31 +170,34 @@ with tab2:
     with col1:
         fig = px.bar(results, x='Model', y='RMSE (M)', color='RMSE (M)', color_continuous_scale='RdYlGn_r',
                      title="RMSE Comparison (lower is better)")
-        fig.add_hline(y=1.280, line_dash="dash", annotation_text="Median baseline")
+        median_rmse = results.loc[results['Model']=='Median (baseline)', 'RMSE (M)']
+        if not median_rmse.empty:
+            fig.add_hline(y=median_rmse.iloc[0], line_dash="dash", annotation_text="Median baseline")
         fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, use_container_width=True)
     with col2:
         fig = px.bar(results, x='Model', y='R²', color='R²', color_continuous_scale='RdYlGn',
                      title="R² Comparison (higher is better)")
-        fig.add_hline(y=0.384, line_dash="dash", annotation_text="Zhan 2026 baseline (R²≈0.384)")
+        fig.add_hline(y=0.384, line_dash="dash", annotation_text="Zhan 2026 North American sales (R²≈0.384; not like-for-like)")
         fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Cross-validation results (TimeSeriesSplit, 5 folds)")
     cv = pd.read_csv('models/cv_results.csv')
     st.dataframe(cv, use_container_width=True)
-    st.caption("CV = TimeSeriesSplit(5) on the training data (≤2012). XGBoost was selected using CV, without using the test set.")
+    st.caption("CV uses five expanding time splits on training titles through 2012. The final holdout was reused during report development; treat test metrics as retrospective.")
 
-    st.subheader("Hyperparameter tuning log")
+    st.subheader("Reported tuned configurations")
     tuning = pd.read_csv('models/tuning_log.csv')
     st.dataframe(tuning, use_container_width=True)
+    st.caption(model_meta.get('tuning_note', ''))
 
 # ============================================================
 # TAB 3: RQ3 - Console generations
 # ============================================================
 with tab3:
     st.header("RQ3: Do genre sales trends change across console generations?")
-    st.success("Conclusion: Yes. Role-Playing sales decline from 0.95M (Gen 5) to 0.55M (Gen 8), while Shooter sales rise from 0.5M to 1.1M. Removing the generation feature increases RMSE by ~7.7% (0.947→1.02M).")
+    st.success("Genre sales patterns differ across console generations; the heatmap below is filtered by the selected sidebar controls.")
 
     pivot = df_filtered.pivot_table(index='Genre', columns='ConsoleGen', values='Global_Sales', aggfunc='mean')
     col_order = [c for c in ['Other','Gen_5','Gen_6','Gen_7','Gen_8'] if c in pivot.columns]
@@ -186,14 +220,14 @@ with tab3:
                  labels={'x':'MAE (millions of units)','y':'Genre'}, title="Mean prediction error by genre",
                  text=err['mean'].round(2))
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("Shooter (0.93M) and Sports (0.54M) are the hardest to predict, with unusually large hits such as Call of Duty and FIFA.")
+    st.caption(f"Errors are calculated from the temporal test predictions of {model_meta['model']}.")
 
 # ============================================================
 # TAB 4: Sales prediction
 # ============================================================
 with tab4:
     st.header("🔮 New Game Sales Predictor")
-    st.markdown("Enter game details to predict global sales (millions of units). Model: **tuned XGBoost** (test RMSE≈1.0M).")
+    st.markdown(f"Enter game details to predict global sales (millions of units). Model: **{model_meta['model']}**.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -251,6 +285,9 @@ with tab4:
     # Market values and ratios
     market_avg = df[(df['Year']<year)&(df['Year']>=year-3)]['Global_Sales'].mean()
     market_total = df[(df['Year']<year)&(df['Year']>=year-3)]['Global_Sales'].sum()
+    platform_history = df[(df['Platform']==platform) & (df['Year']<year)]
+    platform_cumulative_titles = len(platform_history)
+    platform_cumulative_sales = platform_history['Global_Sales'].sum()
 
     genre_trend = historical_feature_value('Genre_Trend_Momentum', df['Genre']==genre, year)
     publisher_genre_fit = historical_feature_value(
@@ -286,6 +323,8 @@ with tab4:
         'PubGenre_Specialization': publisher_genre_fit,
         'GenrePlatform_Fit': genre_platform_fit,
         'SameGenre_Releases_PrevYear': same_genre_releases,
+        'Platform_Cumulative_Titles': platform_cumulative_titles,
+        'Platform_Cumulative_Sales': platform_cumulative_sales,
     }])
 
     # --- Warn about inputs outside the training range ---
@@ -326,4 +365,4 @@ with tab4:
 
 # ---------- Footer ----------
 st.markdown("---")
-st.caption("ADY201m FA26 | Video Game Global Sales Prediction | Leakage-free methodology | Data: VGChartz via Kaggle (16,327 games, 1980–2020)")
+st.caption("ADY201m FA26 | Video Game Global Sales Prediction | Time-based holdout with documented residual leakage risks | Data: VGChartz via Kaggle (16,327 games, 1980–2020)")

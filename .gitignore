@@ -1,3 +1,4 @@
 __pycache__/
 *.py[cod]
 models/*.partial.csv
+.pytest_cache/

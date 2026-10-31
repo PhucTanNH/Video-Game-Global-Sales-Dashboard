@@ -22,6 +22,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBRegressor
 from models.stacking import TimeSeriesStackingRegressor
+from vgsales_core.data import add_platform_cumulative_features  # shared with the dashboard
 
 
 ROOT = Path(__file__).resolve().parent
@@ -65,35 +66,6 @@ NUM_FEATURES = [
     "Platform_Cumulative_Sales",
 ]
 FEATURES = CAT_FEATURES + NUM_FEATURES
-
-
-def add_platform_cumulative_features(data: pd.DataFrame) -> pd.DataFrame:
-    """Add cumulative platform history using strictly earlier release years."""
-    platform_year = (
-        data.groupby(["Platform", "Year"], as_index=False, sort=False)
-        .agg(
-            current_year_titles=("Platform", "size"),
-            current_year_sales=("Global_Sales", "sum"),
-        )
-        .sort_values(["Platform", "Year"], kind="mergesort")
-    )
-    platform_year["Platform_Cumulative_Titles"] = (
-        platform_year.groupby("Platform", sort=False)["current_year_titles"].cumsum()
-        - platform_year["current_year_titles"]
-    )
-    platform_year["Platform_Cumulative_Sales"] = (
-        platform_year.groupby("Platform", sort=False)["current_year_sales"].cumsum()
-        - platform_year["current_year_sales"]
-    )
-    return data.merge(
-        platform_year[
-            ["Platform", "Year", "Platform_Cumulative_Titles", "Platform_Cumulative_Sales"]
-        ],
-        on=["Platform", "Year"],
-        how="left",
-        validate="many_to_one",
-        sort=False,
-    )
 
 
 def make_preprocessor(scale_numeric: bool) -> ColumnTransformer:

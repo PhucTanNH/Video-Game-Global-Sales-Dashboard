@@ -1,0 +1,385 @@
+# ============================================================
+# DASHBOARD STREAMLIT - Video Game Global Sales Prediction
+# Run: streamlit run app.py
+# ============================================================
+import json
+import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import warnings; warnings.filterwarnings('ignore')
+
+APP_VERSION = "2.0.0"
+LEGACY_VERSION = "1.1.0"
+
+# ---------- Page configuration ----------
+st.set_page_config(page_title=f"Video Game Sales Dashboard v{APP_VERSION}", layout="wide", page_icon="🎮")
+
+# ---------- Load data & model (cached for performance) ----------
+@st.cache_data
+def load_data():
+    data = pd.read_excel('ADY201m_enhanced_v2.xlsx')
+    platform_year = (
+        data.groupby(['Platform', 'Year'], as_index=False, sort=False)
+        .agg(
+            current_year_titles=('Platform', 'size'),
+            current_year_sales=('Global_Sales', 'sum'),
+        )
+        .sort_values(['Platform', 'Year'], kind='mergesort')
+    )
+    platform_year['Platform_Cumulative_Titles'] = (
+        platform_year.groupby('Platform', sort=False)['current_year_titles'].cumsum()
+        - platform_year['current_year_titles']
+    )
+    platform_year['Platform_Cumulative_Sales'] = (
+        platform_year.groupby('Platform', sort=False)['current_year_sales'].cumsum()
+        - platform_year['current_year_sales']
+    )
+    return data.merge(
+        platform_year[
+            ['Platform', 'Year', 'Platform_Cumulative_Titles', 'Platform_Cumulative_Sales']
+        ],
+        on=['Platform', 'Year'],
+        how='left',
+        validate='many_to_one',
+        sort=False,
+    )
+
+@st.cache_resource
+def load_model():
+    return joblib.load('models/best_model.joblib')
+
+@st.cache_data
+def load_model_meta():
+    with open('models/model_meta.json', encoding='utf-8') as f:
+        return json.load(f)
+
+df = load_data()
+model = load_model()
+model_meta = load_model_meta()
+
+# Keep inference feature order tied to the deployed model metadata.
+CAT = model_meta['features_cat']
+NUM = model_meta['features_num']
+
+# Training ranges used to flag out-of-range inputs
+TRAIN = df[df['Year']<=model_meta['train_years'][1]]
+train_ranges = {c: (TRAIN[c].min(), TRAIN[c].max()) for c in NUM if c in TRAIN.columns}
+
+# ---------- Sidebar: Filters ----------
+st.sidebar.title("🎮 Filters")
+genre_filter = st.sidebar.multiselect("Genre", sorted(df['Genre'].unique()), default=[])
+platform_filter = st.sidebar.multiselect("Platform", sorted(df['Platform'].unique()), default=[])
+year_range = st.sidebar.slider("Year range", int(df['Year'].min()), int(df['Year'].max()), (2000, 2016))
+tier_filter = st.sidebar.selectbox("Publisher tier", ["All","Major","Mid","Small"])
+
+df_filtered = df.copy()
+if genre_filter: df_filtered = df_filtered[df_filtered['Genre'].isin(genre_filter)]
+if platform_filter: df_filtered = df_filtered[df_filtered['Platform'].isin(platform_filter)]
+df_filtered = df_filtered[(df_filtered['Year']>=year_range[0]) & (df_filtered['Year']<=year_range[1])]
+if tier_filter != "All": df_filtered = df_filtered[df_filtered['Publisher_Tier']==tier_filter]
+
+st.sidebar.markdown(f"**Games shown:** {len(df_filtered):,} / {len(df):,}")
+
+# ---------- Title ----------
+st.title("Video Game Global Sales Prediction Dashboard")
+st.info(f"Current version: v{APP_VERSION} | Previous version: v{LEGACY_VERSION} (legacy)")
+metrics = model_meta['metrics_test']
+st.markdown(
+    f"*ADY201m project — Model: {model_meta['model']} | Target: {model_meta['target']} (raw sales, millions) "
+    f"| Inputs: {len(CAT) + len(NUM)} ({len(CAT)} categorical, {len(NUM)} numeric) "
+    f"| Test RMSE={metrics['RMSE']:.3f}M, MAE={metrics['MAE']:.3f}M, R²={metrics['R2']:.2f}*"
+)
+st.caption(f"Training target transform: {model_meta.get('target_transform', 'none')}")
+with st.expander(f"What's new in v{APP_VERSION}"):
+    st.markdown(
+        "- Expanded the model comparison to eight regressors and 27 pre-release features.\n"
+        "- Added CatBoost, chronological out-of-fold stacking, and platform cumulative history.\n"
+        "- The deployed estimator is selected using training-only temporal cross-validation.\n"
+        "- Re-ran model comparison and TimeSeriesSplit using a log-transformed target.\n"
+        "- Test metrics are a retrospective rerun on the report's previously used holdout, not a new independent test."
+    )
+st.caption(model_meta.get('evaluation_note', ''))
+
+tab1, tab2, tab3, tab4 = st.tabs(["📊 RQ1: Factors", "🤖 RQ2: Model Comparison", "🎯 RQ3: Console Generations", "🔮 Sales Prediction"])
+
+# ============================================================
+# TAB 1: RQ1 - Genre, platform, and regional impact
+# ============================================================
+with tab1:
+    st.header("RQ1: Which genres, platforms, and regions have the greatest impact on sales?")
+    st.success(f"Feature importance is calculated for the deployed {model_meta['model']} model; correlated features can share importance.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Average sales by genre")
+        g_sales = df_filtered.groupby('Genre')['Global_Sales'].mean().sort_values(ascending=True)
+        fig = px.bar(x=g_sales.values, y=g_sales.index, orientation='h',
+                     labels={'x':'Average global sales (millions of units)','y':'Genre'},
+                     color=g_sales.values, color_continuous_scale='Viridis')
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.subheader("Top 15 platforms by average sales")
+        p_sales = df_filtered.groupby('Platform')['Global_Sales'].mean().sort_values(ascending=False).head(15)
+        fig = px.bar(x=p_sales.index, y=p_sales.values,
+                     labels={'x':'Platform','y':'Avg Global Sales (M)'}, color=p_sales.values)
+        fig.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Sales share by region and genre")
+    region = df_filtered.groupby('Genre')[['NA_Sales','EU_Sales','JP_Sales','Other_Sales']].sum()
+    region_pct = region.div(region.sum(axis=1), axis=0)
+    fig = px.bar(region_pct, barmode='stack', color_discrete_sequence=['#3182ce','#38a169','#e53e3e','#d69e2e'],
+                 labels={'value':'Share','variable':'Region'})
+    fig.update_layout(xaxis_tickangle=-45, yaxis_title='Sales share')
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Insight: Role-Playing gets 35% of its sales from Japan (unusually high), while Shooter sales are concentrated in North America and Europe (>70%).")
+
+    st.subheader("Top 10 most important features (permutation importance)")
+    imp = pd.read_csv('models/permutation_importance.csv', index_col=0).iloc[:,0].sort_values(ascending=True).tail(10)
+    fig = px.bar(x=imp.values, y=imp.index, orientation='h',
+                 labels={'x':'Increase in RMSE after feature permutation','y':'Feature'},
+                 title=f"Feature Importance ({model_meta['model']})")
+    st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# TAB 2: RQ2 - Model comparison
+# ============================================================
+with tab2:
+    st.header("RQ2: Which model predicts sales most accurately?")
+    results = pd.read_csv('models/test_results.csv').rename(columns={'R2': 'R²'})
+    best_test = results.loc[results['RMSE (M)'].idxmin()]
+    deployed_result = results.loc[results['Model']==model_meta['model']].iloc[0]
+    st.success(
+        f"Deployed model selected by training-only CV: {model_meta['model']} "
+        f"(holdout RMSE={deployed_result['RMSE (M)']:.3f}M, MAE={deployed_result['MAE (M)']:.3f}M, R²={deployed_result['R²']:.3f})."
+    )
+    st.caption(
+        f"Lowest retrospective holdout RMSE in this rerun: {best_test['Model']} "
+        f"({best_test['RMSE (M)']:.3f}M). The holdout was not used for this rerun's model selection."
+    )
+    st.dataframe(results.style.format({'RMSE (M)':'{:.3f}','MAE (M)':'{:.3f}','R²':'{:.2f}'})
+                 .highlight_min(subset=['RMSE (M)','MAE (M)'], color='#c6f6d5')
+                 .highlight_max(subset=['R²'], color='#c6f6d5'), use_container_width=True)
+    linear_result = results.loc[results['Model']=='Linear Regression'].iloc[0]
+    st.caption(
+        f"The linear baseline's negative R² ({linear_result['R²']:.2f}) means it performs worse than "
+        "predicting the test-set mean; R² is not an accuracy percentage."
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        fig = px.bar(results, x='Model', y='RMSE (M)', color='RMSE (M)', color_continuous_scale='RdYlGn_r',
+                     title="RMSE Comparison (lower is better)")
+        median_rmse = results.loc[results['Model']=='Median (baseline)', 'RMSE (M)']
+        if not median_rmse.empty:
+            fig.add_hline(y=median_rmse.iloc[0], line_dash="dash", annotation_text="Median baseline")
+        fig.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        fig = px.bar(results, x='Model', y='R²', color='R²', color_continuous_scale='RdYlGn',
+                     title="R² Comparison (higher is better)")
+        fig.add_hline(y=0.384, line_dash="dash", annotation_text="Zhan 2026 North American sales (R²≈0.384; not like-for-like)")
+        fig.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Cross-validation results (TimeSeriesSplit, 5 folds)")
+    cv = pd.read_csv('models/cv_results.csv')
+    st.dataframe(cv, use_container_width=True)
+    st.caption("CV uses five expanding time splits on training titles through 2012. The final holdout was reused during report development; treat test metrics as retrospective.")
+
+    st.subheader("Reported tuned configurations")
+    tuning = pd.read_csv('models/tuning_log.csv')
+    st.dataframe(tuning, use_container_width=True)
+    st.caption(model_meta.get('tuning_note', ''))
+
+# ============================================================
+# TAB 3: RQ3 - Console generations
+# ============================================================
+with tab3:
+    st.header("RQ3: Do genre sales trends change across console generations?")
+    st.success("Genre sales patterns differ across console generations; the heatmap below is filtered by the selected sidebar controls.")
+
+    pivot = df_filtered.pivot_table(index='Genre', columns='ConsoleGen', values='Global_Sales', aggfunc='mean')
+    col_order = [c for c in ['Other','Gen_5','Gen_6','Gen_7','Gen_8'] if c in pivot.columns]
+    pivot = pivot[col_order]
+    fig = px.imshow(pivot, text_auto='.2f', color_continuous_scale='YlOrRd',
+                    labels={'x':'Console Generation','y':'Genre','color':'Avg Sales (M)'},
+                    title="Heatmap: Average Sales by Genre × Console Generation")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Annual sales trends by broad genre")
+    yearly_genre = df_filtered.groupby(['Year','Genre_Broad'])['Global_Sales'].mean().reset_index()
+    fig = px.line(yearly_genre, x='Year', y='Global_Sales', color='Genre_Broad', markers=True,
+                  labels={'Global_Sales':'Average sales (M)','Genre_Broad':'Broad genre'})
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Insight: Action genres (Shooter/Fighting) rise sharply from Gen 6 to Gen 7; RPG/Strategy decline after Gen 6; Sports/Racing remain stable.")
+
+    st.subheader("Prediction error by genre (test set)")
+    err = pd.read_csv('models/error_by_genre.csv', index_col=0).sort_values('mean', ascending=True)
+    fig = px.bar(x=err['mean'], y=err.index, orientation='h',
+                 labels={'x':'MAE (millions of units)','y':'Genre'}, title="Mean prediction error by genre",
+                 text=err['mean'].round(2))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"Errors are calculated from the temporal test predictions of {model_meta['model']}.")
+
+# ============================================================
+# TAB 4: Sales prediction
+# ============================================================
+with tab4:
+    st.header("🔮 New Game Sales Predictor")
+    st.markdown(f"Enter game details to predict global sales (millions of units). Model: **{model_meta['model']}**.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        year = st.number_input("Release year", min_value=1995, max_value=2025, value=2015, step=1)
+        genre = st.selectbox("Genre", sorted(df['Genre'].unique()))
+        platform = st.selectbox("Platform", sorted(df['Platform'].unique()))
+        publisher = st.selectbox("Publisher", sorted(df['Publisher'].unique()))
+        num_platforms = st.slider("Number of release platforms", 1, 10, 1)
+
+    with col2:
+        is_sequel = st.checkbox("Is this a sequel?", value=False)
+        franchise_max = st.number_input("Highest previous franchise sales (M)", min_value=0.0, max_value=50.0, value=0.0, step=0.1)
+        franchise_count = st.number_input("Number of previous games in the franchise", min_value=0, max_value=50, value=0, step=1)
+
+    # --- Automatically calculate rolling features from historical data ---
+    def lookup(group_col, val, year, col_prefix):
+        """Look up rolling features for a group over the previous three years."""
+        sub = df[(df[group_col]==val) & (df['Year']<year) & (df['Year']>=year-3)]
+        if len(sub)==0:
+            sub = df[(df[group_col]==val) & (df['Year']<year)]
+        historical_sales = df.loc[df['Year']<year, 'Global_Sales']
+        return {
+            f'{col_prefix}_Prev3Y_AvgSales': sub['Global_Sales'].mean() if len(sub)>0 else historical_sales.mean(),
+            f'{col_prefix}_Prev3Y_Count': len(sub),
+        }
+
+    def historical_feature_value(feature, group_mask, year):
+        history = df.loc[group_mask & (df['Year']<year), ['Year', feature]]
+        if len(history)>0:
+            latest_year = history['Year'].max()
+            return history.loc[history['Year']==latest_year, feature].median()
+        baseline = df.loc[df['Year']<year, feature].dropna()
+        return baseline.median() if len(baseline)>0 else 0.0
+
+    pub_feat  = lookup('Publisher', publisher, year, 'Pub')
+    gen_feat  = lookup('Genre', genre, year, 'Genre')
+    plat_feat = lookup('Platform', platform, year, 'Platform')
+
+    # Platform lifecycle
+    plat_launch = df[df['Platform']==platform]['Platform_Launch_Year'].median()
+    years_since = year - plat_launch if pd.notna(plat_launch) else 5
+    lifecycle = 'Early' if years_since<=2 else ('Mid' if years_since<=5 else 'Late')
+    if platform=='PC': lifecycle = 'PC/Unknown'
+
+    # Console generation
+    console_gen = df[df['Platform']==platform]['ConsoleGen'].mode()
+    console_gen = console_gen.iloc[0] if len(console_gen)>0 else 'Gen_7'
+
+    # Manufacturer and publisher tier
+    manuf = df[df['Platform']==platform]['Platform_Manufacturer'].mode()
+    manuf = manuf.iloc[0] if len(manuf)>0 else 'Other'
+    pub_tier = df[df['Publisher']==publisher]['Publisher_Tier'].mode()
+    pub_tier = pub_tier.iloc[0] if len(pub_tier)>0 else 'Small'
+
+    # Market values and ratios
+    market_history = df[(df['Year']<year)&(df['Year']>=year-3)]
+    if market_history.empty:
+        market_history = df[df['Year']<year]
+    market_avg = market_history['Global_Sales'].mean()
+    market_total = market_history['Global_Sales'].sum()
+    market_avg = market_avg if pd.notna(market_avg) and market_avg > 0 else 0.0
+    market_total = market_total if pd.notna(market_total) and market_total > 0 else 0.0
+    platform_history = df[(df['Platform']==platform) & (df['Year']<year)]
+    platform_cumulative_titles = len(platform_history)
+    platform_cumulative_sales = platform_history['Global_Sales'].sum()
+
+    genre_trend = historical_feature_value('Genre_Trend_Momentum', df['Genre']==genre, year)
+    publisher_genre_fit = historical_feature_value(
+        'PubGenre_Specialization', (df['Publisher']==publisher) & (df['Genre']==genre), year
+    )
+    genre_platform_fit = historical_feature_value(
+        'GenrePlatform_Fit', (df['Genre']==genre) & (df['Platform']==platform), year
+    )
+    target_previous_year = year-1
+    if df['Year'].min() <= target_previous_year <= df['Year'].max():
+        same_genre_releases = ((df['Genre']==genre) & (df['Year']==target_previous_year)).sum()
+    else:
+        recent_releases = df[(df['Genre']==genre) & (df['Year']<year)].groupby('Year').size().tail(3)
+        same_genre_releases = recent_releases.mean() if len(recent_releases)>0 else 0
+
+    input_data = pd.DataFrame([{
+        'Year': year, 'Genre': genre, 'Platform': platform,
+        'Publisher_Tier': pub_tier, 'Platform_Manufacturer': manuf,
+        'Platform_Lifecycle_Stage': lifecycle, 'ConsoleGen': console_gen,
+        'Is_Sequel': int(is_sequel), 'Is_Multiplatform': int(num_platforms>=2),
+        'Num_Platforms': num_platforms,
+        'Prev_Franchise_MaxSales': franchise_max, 'Prev_Franchise_TitleCount': franchise_count,
+        'Pub_Prev3Y_AvgSales': pub_feat['Pub_Prev3Y_AvgSales'],
+        'Pub_Prev3Y_Count': pub_feat['Pub_Prev3Y_Count'],
+        'Genre_Prev3Y_AvgSales': gen_feat['Genre_Prev3Y_AvgSales'],
+        'Genre_Prev3Y_Count': gen_feat['Genre_Prev3Y_Count'],
+        'Platform_Prev3Y_AvgSales': plat_feat['Platform_Prev3Y_AvgSales'],
+        'Platform_Prev3Y_Count': plat_feat['Platform_Prev3Y_Count'],
+        'Years_Since_Platform_Launch': years_since if years_since>=0 else 0,
+        'Genre_vs_Market_Avg': gen_feat['Genre_Prev3Y_AvgSales']/market_avg if market_avg > 0 else 0.0,
+        'Publisher_MarketShare_Prev3Y': (
+            pub_feat['Pub_Prev3Y_AvgSales']*pub_feat['Pub_Prev3Y_Count']/market_total
+            if market_total > 0 else 0.0
+        ),
+        'Genre_Trend_Momentum': genre_trend,
+        'PubGenre_Specialization': publisher_genre_fit,
+        'GenrePlatform_Fit': genre_platform_fit,
+        'SameGenre_Releases_PrevYear': same_genre_releases,
+        'Platform_Cumulative_Titles': platform_cumulative_titles,
+        'Platform_Cumulative_Sales': platform_cumulative_sales,
+    }])
+
+    # --- Warn about inputs outside the training range ---
+    warnings_list = []
+    for c in NUM:
+        lo, hi = train_ranges.get(c, (None, None))
+        if c not in input_data.columns:
+            continue
+        val = input_data[c].iloc[0]
+        if lo is not None and (val < lo or val > hi):
+            warnings_list.append(f"⚠️ **{c}** = {val} is outside the training range ({lo:.0f}–{hi:.0f}) → prediction may be less reliable")
+    if year > 2016:
+        warnings_list.append("⚠️ Year > 2016: very little training data is available for this period (the industry shifted to mobile and digital).")
+    if warnings_list:
+        for w in warnings_list: st.warning(w)
+
+    if st.button("🚀 Predict Sales", type="primary"):
+        missing = [feature for feature in CAT + NUM if feature not in input_data.columns]
+        if missing:
+            st.error(f"Missing features required by the model: {missing}")
+            st.stop()
+        pred = model.predict(input_data[CAT+NUM])[0]
+        pred = max(0.01, pred)  # Prevent negative predictions
+        mae_test = metrics['MAE']
+        st.balloons()
+        st.subheader("Prediction Results")
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Predicted sales", f"{pred:.2f} million units")
+        col_b.metric("Test MAE", f"{mae_test:.2f} M")
+        col_c.metric("Test RMSE", f"{metrics['RMSE']:.2f} M")
+        st.caption("MAE and RMSE are aggregate metrics on the held-out test set, not a per-game confidence or prediction interval.")
+
+        # Classification
+        if pred >= 5: level = "💎 Blockbuster (≥5M)"
+        elif pred >= 1: level = "⭐ Hit (1–5M)"
+        elif pred >= 0.5: level = "✅ Moderate success (0.5–1M)"
+        else: level = "📦 Low sales (<0.5M)"
+        st.info(f"**Classification:** {level}")
+
+        with st.expander("View features used for this prediction"):
+            st.dataframe(input_data.T.astype(str), use_container_width=True)
+
+# ---------- Footer ----------
+st.markdown("---")
+st.caption("ADY201m FA26 | Video Game Global Sales Prediction | Time-based holdout with documented residual leakage risks | Data: VGChartz via Kaggle (16,327 games, 1980–2020)")
